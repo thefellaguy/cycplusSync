@@ -2,6 +2,7 @@ import asyncio
 import logging
 from bleak import BleakScanner, BleakClient
 import re
+import os
 
 TARGET_NAME = "M1_74F7"
 CHARACTERISTIC_UUID = "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
@@ -21,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class BluetoothFileTransfer:
-    def __init__(self):
+    def __init__(self, download_directory="."):
         self.combine = False
         self.reply_ok = False
         self.data = bytearray()
@@ -29,6 +30,51 @@ class BluetoothFileTransfer:
         self.trigger = False
         self.count = 0
         self.notification_data = bytearray()
+        self.download_directory = download_directory
+        
+        # Create download directory if it doesn't exist (only if not current directory)
+        if download_directory != "." and not os.path.exists(self.download_directory):
+            os.makedirs(self.download_directory)
+            logger.info(f"Created download directory: {self.download_directory}")
+        
+        logger.info(f"Using download directory: {os.path.abspath(self.download_directory)}")
+
+    def file_exists_locally(self, filename):
+        """Check if a file already exists in the download directory"""
+        filepath = os.path.join(self.download_directory, filename)
+        exists = os.path.exists(filepath)
+        if exists:
+            file_size = os.path.getsize(filepath)
+            logger.info(f"File {filename} already exists locally at {filepath} ({file_size} bytes)")
+        else:
+            logger.info(f"File {filename} does not exist locally at {filepath}")
+        return exists
+
+    def filter_new_files(self, fit_files):
+        """Filter out files that already exist locally"""
+        logger.info(f"Checking download directory: {os.path.abspath(self.download_directory)}")
+        logger.info(f"Directory exists: {os.path.exists(self.download_directory)}")
+        
+        if os.path.exists(self.download_directory):
+            existing_files_in_dir = os.listdir(self.download_directory)
+            logger.info(f"Files currently in download directory: {existing_files_in_dir}")
+        
+        new_files = []
+        existing_files = []
+        
+        for fit_file in fit_files:
+            if self.file_exists_locally(fit_file):
+                existing_files.append(fit_file)
+            else:
+                new_files.append(fit_file)
+        
+        logger.info(f"Filter results: {len(existing_files)} existing files, {len(new_files)} new files to download")
+        if existing_files:
+            logger.info(f"Skipping existing files: {existing_files}")
+        if new_files:
+            logger.info(f"New files to download: {new_files}")
+        
+        return new_files
 
     def reset_transfer_state(self):
         """Reset state variables before each file transfer"""
@@ -138,7 +184,7 @@ class BluetoothFileTransfer:
         self.notification_data = AWAIT_NEW_DATA
         await self.send_cmd(client, CHARACTERISTIC_UUIDRX, VALUE_TO_WRITE_COPYOK, 0.01)
         await self.wait_until_data(client)
-        
+
     async def get_filelist(self, client):
         # Request Allow File Reads
         success = await self.request_read_file(client)
@@ -158,7 +204,7 @@ class BluetoothFileTransfer:
             await self.copy_copyok_combine(client)
         await self.end_of_transfer(client)
         self.save_file_raw("output.txt", self.data)
-    
+
     async def sync_fitfile(self, client, fit_file):
         self.reset_transfer_state()  # Reset state before each file transfer
         logger.info(f"Attempting to sync file: {fit_file}")
@@ -191,26 +237,48 @@ class BluetoothFileTransfer:
         
         if self.reply_ok:
             logger.info(f"Starting file transfer for {fit_file}")
-            self.combine = False
-            await self.copy_copyok(client)
-            self.data = bytearray()
-            self.combine = True
-            self.trigger = True
-            await self.send_cmd(client, CHARACTERISTIC_UUIDRX, VALUE_TO_WRITE_COPY, 0.01)
             
-            # Monitor the transfer
-            transfer_timeout = 0
-            while self.combine:
-                await self.copy_copyok_combine(client)
-                transfer_timeout += 1
-                if transfer_timeout > 1000:  # Prevent infinite loop
-                    logger.error(f"Transfer timeout for {fit_file}")
-                    break
+            try:
+                self.combine = False
+                await self.copy_copyok(client)
+                self.data = bytearray()
+                self.combine = True
+                self.trigger = True
+                await self.send_cmd(client, CHARACTERISTIC_UUIDRX, VALUE_TO_WRITE_COPY, 0.01)
+                
+                # Monitor the transfer with timeout protection
+                transfer_timeout = 0
+                last_data_size = 0
+                stall_count = 0
+                
+                while self.combine:
+                    await self.copy_copyok_combine(client)
+                    transfer_timeout += 1
                     
-            await self.end_of_transfer(client)
+                    # Check for transfer progress
+                    if len(self.data) > last_data_size:
+                        last_data_size = len(self.data)
+                        stall_count = 0
+                        logger.debug(f"Transfer progress: {len(self.data)} bytes")
+                    else:
+                        stall_count += 1
+                    
+                    # Break on timeout or stall
+                    if transfer_timeout > 2000:  # Increased timeout for larger files
+                        logger.error(f"Transfer timeout for {fit_file} after {transfer_timeout} iterations")
+                        break
+                    elif stall_count > 100:  # No progress for too long
+                        logger.error(f"Transfer stalled for {fit_file} - no progress for {stall_count} iterations")
+                        break
+                        
+                await self.end_of_transfer(client)
+                
+            except Exception as e:
+                logger.error(f"Error during transfer: {e}")
             
             if len(self.data) > 0:
-                self.save_file_raw(fit_file, self.data)
+                filepath = os.path.join(self.download_directory, fit_file)
+                self.save_file_raw(filepath, self.data)
                 logger.info(f"Successfully saved {fit_file} ({len(self.data)} bytes)")
                 return True
             else:
@@ -219,7 +287,7 @@ class BluetoothFileTransfer:
         else:
             logger.warning(f"File request for {fit_file} was not acknowledged properly")
             return False
-            
+
     async def read_diskspace(self, client):
         pre = bytearray(b'\n')
         # Read Diskspace
@@ -229,8 +297,17 @@ class BluetoothFileTransfer:
         if self.notification_data[:1] == pre:
             data = self.notification_data[1:-1].decode('utf-8')  # Decode bytearray to string
             logger.info(f"Free Diskspace: {data}kb")
-            
+
     async def run(self):
+        # Debug: Test the file checking logic
+        logger.info(f"DEBUG: Testing file existence check...")
+        logger.info(f"DEBUG: Download directory: {os.path.abspath(self.download_directory)}")
+        logger.info(f"DEBUG: Directory exists: {os.path.exists(self.download_directory)}")
+        
+        if os.path.exists(self.download_directory):
+            files_in_dir = os.listdir(self.download_directory)
+            logger.info(f"DEBUG: Files in directory: {files_in_dir}")
+        
         device = await self.discover_device(TARGET_NAME)
         if not device:
             return
@@ -249,27 +326,40 @@ class BluetoothFileTransfer:
                 await self.get_filelist(client)
                 
                 fit_files = self.extract_fit_filenames("output.txt")
-                logger.info(f"Found {len(fit_files)} FIT files to transfer: {list(fit_files)}")
+                logger.info(f"Found {len(fit_files)} total FIT files on device: {list(fit_files)}")
+                
+                # Filter out files that already exist locally
+                new_files = self.filter_new_files(fit_files)
+                
+                if not new_files:
+                    logger.info("No new files to download - all files already exist locally!")
+                    await client.stop_notify(CHARACTERISTIC_UUID)
+                    await client.stop_notify(CHARACTERISTIC_UUIDTX)
+                    return
+                
+                logger.info(f"Will download {len(new_files)} new files: {new_files}")
                 
                 successful_transfers = 0
                 failed_transfers = 0
                 
-                for i, fit_file in enumerate(fit_files, 1):
-                    logger.info(f"Transferring file {i}/{len(fit_files)}: {fit_file}")
+                for i, fit_file in enumerate(new_files, 1):
+                    logger.info(f"Transferring file {i}/{len(new_files)}: {fit_file}")
                     try:
                         success = await self.sync_fitfile(client, fit_file)
                         if success:
                             successful_transfers += 1
-                            logger.info(f"Successfully transferred {fit_file}")
+                            logger.info(f"✓ Successfully transferred {fit_file}")
                         else:
                             failed_transfers += 1
-                            logger.error(f"Failed to transfer {fit_file}")
+                            logger.error(f"✗ Failed to transfer {fit_file}")
                     except Exception as e:
                         failed_transfers += 1
-                        logger.error(f"Exception during transfer of {fit_file}: {e}")
+                        logger.error(f"✗ Exception during transfer of {fit_file}: {e}")
                     
                     # Small delay between transfers
-                    await asyncio.sleep(2)
+                    if i < len(new_files):  # Don't wait after the last file
+                        logger.info(f"Waiting 2 seconds before next transfer...")
+                        await asyncio.sleep(2)
                 
                 logger.info(f"Transfer summary: {successful_transfers} successful, {failed_transfers} failed")
                 
@@ -309,7 +399,8 @@ if __name__ == "__main__":
     # Uncomment the line below if you want more verbose logging
     # logging.getLogger().setLevel(logging.DEBUG)
     
-    # You can specify a custom download directory here
-    # transfer = BluetoothFileTransfer(download_directory="./my_fit_files")
-    transfer = BluetoothFileTransfer()  # Uses default "./fit_files" directory
+    # Default behavior: save files in the same directory as the script
+    # To use a subdirectory instead, uncomment the line below:
+    # transfer = BluetoothFileTransfer(download_directory="./fit_files")
+    transfer = BluetoothFileTransfer()  # Uses current directory
     asyncio.run(transfer.run())
