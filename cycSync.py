@@ -5,6 +5,8 @@ import re
 import os
 
 TARGET_NAME = "M1_74F7"
+TARGET_MAC_ADDRESS = ""  # Optional: specify MAC address if device name discovery fails
+# Example: TARGET_MAC_ADDRESS = "F7:74:13:47:EA:36"
 CHARACTERISTIC_UUID = "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
 CHARACTERISTIC_UUIDTX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 CHARACTERISTIC_UUIDRX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
@@ -118,7 +120,19 @@ class BluetoothFileTransfer:
 
         return notification_handler
 
-    async def discover_device(self, target_name):
+    async def discover_device(self, target_name, target_mac=None):
+        """Discover device by name or MAC address"""
+        if target_mac:
+            logger.info(f"Attempting to connect directly to MAC address: {target_mac}")
+
+            # Create a mock device object for direct MAC connection
+            class MockDevice:
+                def __init__(self, address):
+                    self.address = address
+                    self.name = f"Device_{address}"
+
+            return MockDevice(target_mac)
+
         logger.info("Scanning for Bluetooth devices...")
         devices = await BleakScanner.discover()
         for device in devices:
@@ -126,6 +140,7 @@ class BluetoothFileTransfer:
             if device.name == target_name:
                 logger.info(f"Found target device: {device.name} - {device.address}")
                 return device
+
         logger.warning(f"Device with name {target_name} not found.")
         return None
 
@@ -342,8 +357,13 @@ class BluetoothFileTransfer:
             files_in_dir = os.listdir(self.download_directory)
             logger.info(f"DEBUG: Files in directory: {files_in_dir}")
 
-        device = await self.discover_device(TARGET_NAME)
+        device = await self.discover_device(TARGET_NAME, TARGET_MAC_ADDRESS if TARGET_MAC_ADDRESS else None)
         if not device:
+            if TARGET_MAC_ADDRESS:
+                logger.error(f"Unable to create device object for MAC address: {TARGET_MAC_ADDRESS}")
+            else:
+                logger.error(
+                    "Device discovery failed. Consider setting TARGET_MAC_ADDRESS if you know the device's MAC address.")
             return
 
         # Use retry logic for connection
@@ -447,6 +467,6 @@ if __name__ == "__main__":
 
     # Default behavior: save files in the same directory as the script
     # To use a subdirectory instead, uncomment the line below:
-    #transfer = BluetoothFileTransfer(download_directory="/you/fit/folder/")
+    # transfer = BluetoothFileTransfer(download_directory="./fit_files")
     transfer = BluetoothFileTransfer()  # Uses current directory
     asyncio.run(transfer.run())
