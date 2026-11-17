@@ -1,7 +1,7 @@
 [project]
 name = "cycplussync"
 version = "0.1.0"
-description = "Add your description here"
+description = "Sync FIT files from CycPlus M1 bicycle computer via BLE"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
