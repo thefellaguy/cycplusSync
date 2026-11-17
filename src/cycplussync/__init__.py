@@ -3,11 +3,9 @@ import logging
 from pathlib import Path
 from bleak import BleakScanner, BleakClient
 import re
-import os
 
-TARGET_NAME = "M1_B0ED"
-TARGET_MAC_ADDRESS = ""  # Optional: specify MAC address if device name discovery fails
-# Example: TARGET_MAC_ADDRESS = "F7:74:13:47:EA:36"
+from cycplussync.settings import Settings
+
 CHARACTERISTIC_UUID = "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
 CHARACTERISTIC_UUIDTX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 CHARACTERISTIC_UUIDRX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
@@ -25,12 +23,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def _default_rides_dir() -> Path:
-    return Path.home() / ".cycplusSync" / "profiles" / "Default" / "rides"
-
-
 class BluetoothFileTransfer:
-    def __init__(self, download_directory: Path | None = None):
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings()
+        self.download_directory = (
+            Path.home() / ".cycplusSync" / "profiles" / self.settings.profile / "rides"
+        )
+        self.download_directory.mkdir(parents=True, exist_ok=True)
+
         self.combine = False
         self.reply_ok = False
         self.data = bytearray()
@@ -38,9 +38,7 @@ class BluetoothFileTransfer:
         self.trigger = False
         self.count = 0
         self.notification_data = bytearray()
-        self.download_directory = download_directory or _default_rides_dir()
 
-        self.download_directory.mkdir(parents=True, exist_ok=True)
         logger.info(f"Using download directory: {self.download_directory}")
 
     def file_exists_locally(self, filename):
@@ -356,13 +354,16 @@ class BluetoothFileTransfer:
             files_in_dir = list(self.download_directory.iterdir())
             logger.info(f"Files in directory: {files_in_dir}")
 
-        device = await self.discover_device(TARGET_NAME, TARGET_MAC_ADDRESS if TARGET_MAC_ADDRESS else None)
+        device = await self.discover_device(
+            self.settings.target_name,
+            self.settings.target_mac_address if self.settings.target_mac_address else None,
+        )
         if not device:
-            if TARGET_MAC_ADDRESS:
-                logger.error(f"Unable to create device object for MAC address: {TARGET_MAC_ADDRESS}")
+            if self.settings.target_mac_address:
+                logger.error(f"Unable to create device object for MAC address: {self.settings.target_mac_address}")
             else:
                 logger.error(
-                    "Device discovery failed. Consider setting TARGET_MAC_ADDRESS if you know the device's MAC address.")
+                    "Device discovery failed. Consider setting target_mac_address if you know the device's MAC address.")
             return
 
         # Use retry logic for connection
@@ -460,5 +461,6 @@ class BluetoothFileTransfer:
 
 
 def main() -> None:
-    transfer = BluetoothFileTransfer()
+    settings = Settings()
+    transfer = BluetoothFileTransfer(settings=settings)
     asyncio.run(transfer.run())
