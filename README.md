@@ -5,7 +5,41 @@ Pulls fit files from your cycplus M1 bicycle computer
 This is largely based off of Kaiserdragon2 CycSync android app (https://github.com/Kaiserdragon2/CycSync), only re-purposed to download the FIT files directly to your computer. From here you can do what you wish with them, including upload them to strava. I personally view them locally with Fit File Viewer: https://github.com/Nick2bad4u/FitFileViewer
 
 
-Usage: You'll need a working pyhton install and the python package called bleak. Assuming you have python working, a `pip install bleak` should get you all the requirements. From there just run the python file. If it doesn't find your bike computer you might have to find the name of it and change line 7. Id you don't have a cycplus M1, you'll definitely have to change line 7. This is bluetooth LE, file transfers are not very fast. 
+## Usage
+
+Install [uv](https://docs.astral.sh/uv/), then:
+
+```bash
+uv run cycplusSync
+```
+
+If your device has a different BLE name than `M1_B0ED`, override it:
+
+```bash
+uv run cycplusSync --target-name M1_74F7
+```
+
+This is Bluetooth LE; file transfers are not very fast.
+
+## Configuration
+
+Settings can be provided via (in priority order):
+
+1. **CLI flags** – `uv run cycplusSync --profile MyProfile --target-name M1_B0ED`
+2. **Environment variables** – prefix `CYCPLUSSYNC_`, e.g. `CYCPLUSSYNC_TARGET_NAME=M1_74F7`
+3. **TOML config** – `~/.cycplusSync/config.toml`:
+
+```toml
+target_name = "M1_74F7"
+target_mac_address = "F7:74:13:47:EA:36"
+profile = "Default"
+```
+
+Downloaded FIT files are stored under `~/.cycplusSync/profiles/<profile>/rides/`.
+
+## Legacy usage
+
+You'll need a working Python install and the python package called bleak. Assuming you have python working, a `pip install bleak` should get you all the requirements. From there just run the python file. If it doesn't find your bike computer you might have to find the name of it. If you don't have a cycplus M1, you'll definitely have to change the device name. This is bluetooth LE, file transfers are not very fast.
 
 output:
 ```
