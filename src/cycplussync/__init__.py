@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from bleak import BleakScanner, BleakClient
 import re
 import os
@@ -24,8 +25,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def _default_rides_dir() -> Path:
+    return Path.home() / ".cycplusSync" / "profiles" / "Default" / "rides"
+
+
 class BluetoothFileTransfer:
-    def __init__(self, download_directory="."):
+    def __init__(self, download_directory: Path | None = None):
         self.combine = False
         self.reply_ok = False
         self.data = bytearray()
@@ -33,21 +38,17 @@ class BluetoothFileTransfer:
         self.trigger = False
         self.count = 0
         self.notification_data = bytearray()
-        self.download_directory = download_directory
+        self.download_directory = download_directory or _default_rides_dir()
 
-        # Create download directory if it doesn't exist (only if not current directory)
-        if download_directory != "." and not os.path.exists(self.download_directory):
-            os.makedirs(self.download_directory)
-            logger.info(f"Created download directory: {self.download_directory}")
-
-        logger.info(f"Using download directory: {os.path.abspath(self.download_directory)}")
+        self.download_directory.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Using download directory: {self.download_directory}")
 
     def file_exists_locally(self, filename):
         """Check if a file already exists in the download directory"""
-        filepath = os.path.join(self.download_directory, filename)
-        exists = os.path.exists(filepath)
+        filepath = self.download_directory / filename
+        exists = filepath.exists()
         if exists:
-            file_size = os.path.getsize(filepath)
+            file_size = filepath.stat().st_size
             logger.info(f"File {filename} already exists locally at {filepath} ({file_size} bytes)")
         else:
             logger.info(f"File {filename} does not exist locally at {filepath}")
@@ -55,11 +56,11 @@ class BluetoothFileTransfer:
 
     def filter_new_files(self, fit_files):
         """Filter out files that already exist locally"""
-        logger.info(f"Checking download directory: {os.path.abspath(self.download_directory)}")
-        logger.info(f"Directory exists: {os.path.exists(self.download_directory)}")
+        logger.info(f"Checking download directory: {self.download_directory}")
+        logger.info(f"Directory exists: {self.download_directory.exists()}")
 
-        if os.path.exists(self.download_directory):
-            existing_files_in_dir = os.listdir(self.download_directory)
+        if self.download_directory.exists():
+            existing_files_in_dir = list(self.download_directory.iterdir())
             logger.info(f"Files currently in download directory: {existing_files_in_dir}")
 
         new_files = []
@@ -219,7 +220,7 @@ class BluetoothFileTransfer:
         while self.combine:
             await self.copy_copyok_combine(client)
         await self.end_of_transfer(client)
-        self.save_file_raw("output.txt", self.data)
+        self.save_file_raw(self.download_directory / "output.txt", self.data)
 
     async def sync_fitfile(self, client, fit_file):
         self.reset_transfer_state()  # Reset state before each file transfer
@@ -293,7 +294,7 @@ class BluetoothFileTransfer:
                 logger.error(f"Error during transfer: {e}")
 
             if len(self.data) > 0:
-                filepath = os.path.join(self.download_directory, fit_file)
+                filepath = self.download_directory / fit_file
                 self.save_file_raw(filepath, self.data)
                 logger.info(f"Successfully saved {fit_file} ({len(self.data)} bytes)")
                 return True
@@ -348,14 +349,12 @@ class BluetoothFileTransfer:
         return None
 
     async def run(self):
-        # Debug: Test the file checking logic
-        logger.info(f"DEBUG: Testing file existence check...")
-        logger.info(f"DEBUG: Download directory: {os.path.abspath(self.download_directory)}")
-        logger.info(f"DEBUG: Directory exists: {os.path.exists(self.download_directory)}")
+        logger.info(f"Download directory: {self.download_directory}")
+        logger.info(f"Directory exists: {self.download_directory.exists()}")
 
-        if os.path.exists(self.download_directory):
-            files_in_dir = os.listdir(self.download_directory)
-            logger.info(f"DEBUG: Files in directory: {files_in_dir}")
+        if self.download_directory.exists():
+            files_in_dir = list(self.download_directory.iterdir())
+            logger.info(f"Files in directory: {files_in_dir}")
 
         device = await self.discover_device(TARGET_NAME, TARGET_MAC_ADDRESS if TARGET_MAC_ADDRESS else None)
         if not device:
@@ -384,7 +383,7 @@ class BluetoothFileTransfer:
             await self.read_diskspace(client)
             await self.get_filelist(client)
 
-            fit_files = self.extract_fit_filenames("output.txt")
+            fit_files = self.extract_fit_filenames(str(self.download_directory / "output.txt"))
             logger.info(f"Found {len(fit_files)} total FIT files on device: {list(fit_files)}")
 
             # Filter out files that already exist locally
